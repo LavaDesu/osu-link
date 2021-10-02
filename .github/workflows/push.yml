@@ -9,6 +9,13 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+            - platform: ubuntu-latest
+              name: x86_64-linux
+            - platform: macos-latest
+              name: x86_64-macos
+            - platform: windows-latest
+              name: x86_64-win
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
@@ -23,3 +30,8 @@ jobs:
         with:
           command: build
           args: --release
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: osu-link.${{ matrix.name }}
+          path: target/release/osu-link
