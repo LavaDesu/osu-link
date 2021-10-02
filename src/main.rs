@@ -130,7 +130,7 @@ impl State {
         };
 
         #[cfg(target_family = "windows")]
-        if let Err(_) = windows_link_check() {
+        if let Err(_) = windows_link_check(&lazer_path, &stable_path) {
             return Err(anyhow!("Hard link test failed! On windows, both lazer and stable must be on the same disk for linking to work."));
         }
 
