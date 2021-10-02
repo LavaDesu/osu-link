@@ -12,10 +12,14 @@ jobs:
         include:
             - platform: ubuntu-latest
               name: x86_64-linux
+              target: target/release/osu-link
             - platform: macos-latest
               name: x86_64-macos
+              target: target/release/osu-link
             - platform: windows-latest
               name: x86_64-win
+              target: target/release/osu-link.exe
+
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
@@ -34,4 +38,4 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: osu-link.${{ matrix.name }}
-          path: target/release/osu-link
+          path: ${{ matrix.target }}
