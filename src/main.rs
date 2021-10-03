@@ -197,7 +197,9 @@ fn main() -> Result<()> {
     println!("Lazer path: {:?}", state.lazer_path);
     println!("Stable beatmap count: {}", stable_len);
     println!("Lazer beatmap count: {}", lazer_len);
-    print!("Make sure both osu!stable and osu!lazer are closed! Press enter to continue, Ctrl+C to cancel");
+    println!("Make sure both osu!stable and osu!lazer are closed!");
+    println!("Also back up your osu!lazer folder before continuing!");
+    print!("Press enter to continue, Ctrl+C to cancel");
     stdout().flush()?;
     wait_for_input()?;
 
