@@ -1,30 +1,26 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{TimeZone, Utc};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
-use libosu::{
-    beatmap::Beatmap,
-    db::{Db, DbBeatmap},
-    events::Event,
-    prelude::{Mode, Mods},
-    timing::{TimingPointKind, UninheritedTimingInfo},
-};
-use rand::{thread_rng, Rng};
-use rayon::prelude::*;
+use libosu::db::{Db, DbBeatmap};
 use rfd::FileDialog;
-use rusqlite::{params, Connection, Transaction};
-use sha2::{Digest, Sha256};
+use rusqlite::Connection;
 use std::{
     collections::HashSet,
     convert::TryInto,
-    fmt::Write as FmtWrite,
     fs::File,
-    io::{stdin, stdout, BufReader, Read, Write as IoWrite},
-    path::{Path, PathBuf},
-    sync::mpsc::{channel, Receiver, Sender},
+    io::{stdin, stdout, BufReader, Write as IoWrite},
+    path::PathBuf,
+    sync::mpsc::channel,
     thread::spawn,
 };
-use walkdir::WalkDir;
+
+mod database;
+mod processors;
+
+use crate::processors::{
+    context::{BeatmapProcessed, HashProcessed, HashRequest},
+    BeatmapProcessor, HashProcessor,
+};
 
 // Uses a random 32 characters long hexadecimal string instead of calculating the sha256 of each map
 // It *works*, but not recommended as it isn't what lazer expects
@@ -36,29 +32,6 @@ const LAST_MIGRATION_ID: &str = "20210912144011_AddSamplesMatchPlaybackRate";
 // Difference between windows epoch (0001/01/01 12:00:00 UTC) to unix epoch (1970/01/01 12:00:00 UTC)
 // Units are in windows ticks; 1 tick = 100ns; 10 000 ticks = 1ms
 const WIN_TO_UNIX_EPOCH: u64 = 621_355_968_000_000_000;
-
-struct BeatmapProcessedContext {
-    db_beatmap: DbBeatmap,
-    beatmap: Beatmap,
-    is_main: bool,
-}
-
-struct HashRequestContext {
-    beatmap_id: u32,
-    beatmapset_id: u32,
-    folder_name: String,
-    file_name: String,
-
-    beatmapset_info_id: i64,
-    stripped_path: PathBuf,
-    full_path: PathBuf,
-}
-
-struct HashProcessedContext {
-    request: HashRequestContext,
-
-    hash: String,
-}
 
 struct ProgressBars {
     manager: MultiProgress,
@@ -74,11 +47,11 @@ struct ProgressStyles {
     waiting: ProgressStyle,
 }
 
-struct State {
-    lazer_path: PathBuf,
-    stable_path: PathBuf,
-    lazer_db_path: PathBuf,
-    stable_db_path: PathBuf,
+pub struct State {
+    pub lazer_path: PathBuf,
+    pub stable_path: PathBuf,
+    pub lazer_db_path: PathBuf,
+    pub stable_db_path: PathBuf,
 
     db_online_connection: Connection,
     progress_bars: ProgressBars,
@@ -202,138 +175,6 @@ impl State {
     }
 }
 
-struct BeatmapThread {
-    bar: ProgressBar,
-    insert_bar: ProgressBar,
-    length_unchanging_style: ProgressStyle,
-    stable_path: PathBuf,
-}
-
-impl BeatmapThread {
-    fn new(state: &State) -> Self {
-        Self {
-            bar: state.progress_bars.beatmap.clone(),
-            insert_bar: state.progress_bars.beatmap_insert.clone(),
-            length_unchanging_style: state.progress_styles.length_unchanging.clone(),
-            stable_path: state.stable_path.clone(),
-        }
-    }
-
-    fn start(self, beatmaps: Vec<DbBeatmap>, sender: Sender<BeatmapProcessedContext>) {
-        let mut processed_sets: Vec<u32> = vec![];
-        let beatmaps = beatmaps
-            .into_iter()
-            .map(|bm| -> (DbBeatmap, bool) {
-                if processed_sets.contains(&bm.beatmap_set_id) {
-                    (bm, false)
-                } else {
-                    processed_sets.push(bm.beatmap_set_id);
-                    (bm, true)
-                }
-            })
-            .collect_vec();
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .thread_name(|i| format!("(osu-link) beatmap thread {}", i))
-            .build()
-            .unwrap();
-        pool.install(move || {
-            beatmaps
-                .par_iter()
-                .for_each_with(sender, |sender, (db_beatmap, is_main)| {
-                    self.bar.set_message(format!(
-                        "{: <7} - {: <7}",
-                        db_beatmap.beatmap_set_id, db_beatmap.beatmap_id
-                    ));
-                    self.bar.inc(1);
-                    if let Err(e) = self.process(sender, db_beatmap, *is_main) {
-                        self.bar.println(format!(
-                            "Error occurred while processing {}/{}",
-                            db_beatmap.folder_name, db_beatmap.beatmap_file_name
-                        ));
-                        self.bar.println(format!("{}", e));
-                    }
-                    self.insert_bar.inc_length(1);
-                });
-
-            self.bar.finish_with_message("Done.");
-            self.insert_bar
-                .set_style(self.length_unchanging_style.clone());
-        });
-    }
-
-    fn process(
-        &self,
-        sender: &Sender<BeatmapProcessedContext>,
-        db_beatmap: &DbBeatmap,
-        is_main: bool,
-    ) -> Result<()> {
-        let mut path = self.stable_path.clone();
-        path.push("Songs");
-        path.push(&db_beatmap.folder_name);
-        path.push(&db_beatmap.beatmap_file_name);
-
-        let fd = File::open(path)?;
-        let beatmap = Beatmap::parse(fd)?;
-        sender.send(BeatmapProcessedContext {
-            db_beatmap: db_beatmap.clone(),
-            is_main,
-            beatmap,
-        })?;
-
-        Ok(())
-    }
-}
-
-struct HashThread {
-    bar: ProgressBar,
-    insert_bar: ProgressBar,
-}
-
-impl HashThread {
-    fn new(state: &State) -> Self {
-        Self {
-            bar: state.progress_bars.hash.clone(),
-            insert_bar: state.progress_bars.hash_insert.clone(),
-        }
-    }
-
-    fn start(self, sender: Sender<HashProcessedContext>, receiver: Receiver<HashRequestContext>) {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .thread_name(|i| format!("(osu-link) hash thread {}", i))
-            .build()
-            .unwrap();
-        pool.install(move || {
-            receiver
-                .into_iter()
-                .par_bridge()
-                .for_each_with(sender, |sender, request| {
-                    self.bar.set_message(format!(
-                        "{: <7} - {: <7}",
-                        request.beatmapset_id, request.beatmap_id
-                    ));
-                    self.bar.inc(1);
-                    match hash_file(&request.full_path) {
-                        Ok(hash) => {
-                            sender.send(HashProcessedContext { request, hash }).unwrap();
-                            self.insert_bar.inc_length(1);
-                        }
-                        Err(e) => {
-                            self.bar.println(format!(
-                                "Error occurred while processing {}/{}",
-                                request.folder_name, request.file_name
-                            ));
-                            self.bar.println(format!("{}", e));
-                        }
-                    }
-                });
-            self.bar.finish_with_message("Done.");
-        });
-    }
-}
-
 fn main() -> Result<()> {
     let state = State::new()?;
 
@@ -355,22 +196,22 @@ fn main() -> Result<()> {
 
     state.show_progress();
 
-    let (bm_sx, bm_rx) = channel::<BeatmapProcessedContext>();
-    let (hash_req_sx, hash_req_rx) = channel::<HashRequestContext>();
-    let (hash_sx, hash_rx) = channel::<HashProcessedContext>();
+    let (bm_sx, bm_rx) = channel::<BeatmapProcessed>();
+    let (hash_req_sx, hash_req_rx) = channel::<HashRequest>();
+    let (hash_sx, hash_rx) = channel::<HashProcessed>();
 
-    let b_ctx = BeatmapThread::new(&state);
+    let b_ctx = BeatmapProcessor::new(&state);
     let beatmap_thread = spawn(move || {
         b_ctx.start(beatmaps, bm_sx);
     });
-    let h_ctx = HashThread::new(&state);
+    let h_ctx = HashProcessor::new(&state);
     let hash_thread = spawn(move || {
         h_ctx.start(hash_sx, hash_req_rx);
     });
 
     let transaction = db_connection.transaction()?;
 
-    insert_beatmaps(&state, &transaction, bm_rx, hash_req_sx)?;
+    database::insert_beatmaps(&state, &transaction, bm_rx, hash_req_sx)?;
     state
         .progress_bars
         .beatmap_insert
@@ -381,7 +222,7 @@ fn main() -> Result<()> {
         .progress_bars
         .hash_insert
         .set_style(state.progress_styles.length_unchanging.clone());
-    insert_hashes(&state, &transaction, hash_rx)?;
+    database::insert_hashes(&state, &transaction, hash_rx)?;
     state.progress_bars.hash_insert.finish_with_message("Done.");
 
     beatmap_thread.join().unwrap();
@@ -427,9 +268,9 @@ fn get_beatmaps(
         .into_iter()
         .filter(|bm| {
             stable_beatmaps.contains(&bm.beatmap_id) &&
-        // TODO: unsubmitted maps
-        bm.beatmap_id != 0 &&
-        bm.beatmap_set_id != u32::MAX
+            // TODO: unsubmitted maps
+            bm.beatmap_id != 0 &&
+            bm.beatmap_set_id != u32::MAX
         })
         .collect_vec();
     beatmaps.sort_unstable_by(|a, b| a.beatmap_id.cmp(&b.beatmap_id));
@@ -439,475 +280,6 @@ fn get_beatmaps(
         .set_length(beatmaps.len().try_into()?);
 
     Ok((stable_len, lazer_len, beatmaps))
-}
-
-fn insert_beatmaps(
-    state: &State,
-    transaction: &Transaction,
-    receiver: Receiver<BeatmapProcessedContext>,
-    hash_sender: Sender<HashRequestContext>,
-) -> Result<()> {
-    for beatmap in receiver {
-        state.progress_bars.beatmap_insert.set_message(format!(
-            "{: <7} - {: <7}",
-            beatmap.db_beatmap.beatmap_set_id, beatmap.db_beatmap.beatmap_id
-        ));
-        state.progress_bars.beatmap_insert.inc(1);
-
-        let res = insert_beatmap(state, transaction, &beatmap);
-        if let Err(err) = res {
-            state.progress_bars.beatmap_insert.println(format!(
-                "Error importing {}/{}",
-                beatmap.db_beatmap.folder_name, beatmap.db_beatmap.beatmap_file_name
-            ));
-            state
-                .progress_bars
-                .beatmap_insert
-                .println(format!("{}", err));
-        } else {
-            let res = res.unwrap();
-
-            if !beatmap.is_main {
-                continue;
-            }
-
-            let mut bms_path = state.stable_path.clone();
-            bms_path.push("Songs");
-            bms_path.push(&beatmap.db_beatmap.folder_name);
-
-            for entry in WalkDir::new(&bms_path) {
-                let entry = entry?;
-                let path = entry.path();
-
-                if !path.is_file() {
-                    continue;
-                }
-
-                let clone = path.to_path_buf();
-                let stripped_path = clone.strip_prefix(&bms_path)?;
-
-                hash_sender
-                    .send(HashRequestContext {
-                        beatmap_id: beatmap.db_beatmap.beatmap_id,
-                        beatmapset_id: beatmap.db_beatmap.beatmap_set_id,
-                        folder_name: beatmap.db_beatmap.folder_name.clone(),
-                        file_name: beatmap.db_beatmap.beatmap_file_name.clone(),
-                        beatmapset_info_id: res,
-                        full_path: path.to_path_buf(),
-                        stripped_path: stripped_path.to_path_buf(),
-                    })
-                    .unwrap();
-
-                state.progress_bars.hash.inc_length(1);
-            }
-        };
-    }
-
-    Ok(())
-}
-
-fn insert_hashes(
-    state: &State,
-    transaction: &Transaction,
-    receiver: Receiver<HashProcessedContext>,
-) -> Result<()> {
-    for hash in receiver {
-        state.progress_bars.hash_insert.set_message(format!(
-            "{: <7} - {: <7}",
-            hash.request.beatmapset_id, hash.request.beatmap_id
-        ));
-
-        transaction.execute(
-            "INSERT OR IGNORE INTO FileInfo
-                 (Hash, ReferenceCount)
-             VALUES
-                 (?, ?)",
-            params![hash.hash, 0],
-        )?;
-
-        transaction.execute(
-            "UPDATE FileInfo
-             SET ReferenceCount = ReferenceCount + 1
-             WHERE Hash = ?",
-            params![hash.hash],
-        )?;
-
-        let file_id: i64 = transaction.query_row(
-            "SELECT ID
-             FROM FileInfo
-             WHERE Hash = ?",
-            params![hash.hash],
-            |row| row.get(0),
-        )?;
-
-        transaction.execute(
-            "INSERT INTO BeatmapSetFileInfo
-                 (BeatmapSetInfoID, FileInfoID, Filename)
-             VALUES
-                 (?, ?, ?)",
-            params![
-                hash.request.beatmapset_info_id,
-                file_id,
-                hash.request.stripped_path.to_str().unwrap()
-            ],
-        )?;
-
-        if hash.request.stripped_path.to_str().unwrap() == hash.request.file_name {
-            transaction.execute(
-                "UPDATE BeatmapInfo
-                 SET Hash = ?
-                 WHERE OnlineBeatmapID = ?",
-                params![hash.hash, hash.request.beatmap_id],
-            )?;
-        }
-
-        let mut path = state.lazer_path.clone();
-        path.push("files");
-        path.push(&hash.hash[..1]);
-        path.push(&hash.hash[..2]);
-        std::fs::create_dir_all(&path)?;
-        path.push(&hash.hash);
-
-        #[cfg(target_family = "unix")]
-        {
-            let read = std::fs::read_link(&path);
-            if read.is_err() && !path.exists() {
-                std::os::unix::fs::symlink(hash.request.full_path.clone(), path)?;
-            }
-        }
-        #[cfg(target_family = "windows")]
-        {
-            if !path.exists() {
-                std::fs::hard_link(hash.request.full_path.clone(), path)?;
-            }
-        }
-
-        state.progress_bars.hash_insert.inc(1);
-    }
-
-    Ok(())
-}
-
-fn insert_beatmap(
-    state: &State,
-    transaction: &Transaction,
-    beatmap_context: &BeatmapProcessedContext,
-) -> Result<i64> {
-    let difficulty_id = insert_beatmap_difficulty(transaction, &beatmap_context.beatmap)?;
-    let metadata_id = insert_beatmap_metadata(
-        transaction,
-        &state.db_online_connection,
-        &beatmap_context.beatmap,
-    )?;
-    let beatmapset_info_id = insert_beatmapset_info(
-        transaction,
-        &beatmap_context.db_beatmap,
-        metadata_id,
-        beatmap_context.is_main,
-    )?;
-
-    insert_beatmap_info(
-        transaction,
-        &beatmap_context.beatmap,
-        &beatmap_context.db_beatmap,
-        beatmapset_info_id,
-        difficulty_id,
-        metadata_id,
-    )?;
-
-    Ok(beatmapset_info_id)
-}
-
-fn insert_beatmap_difficulty(tx: &Transaction, beatmap: &Beatmap) -> Result<i64> {
-    tx.execute(
-        "INSERT INTO BeatmapDifficulty
-             (ApproachRate,
-              CircleSize,
-              DrainRate,
-              OverallDifficulty,
-              SliderMultiplier,
-              SliderTickRate)
-         VALUES
-             (?, ?, ?, ?, ?, ?)",
-        params![
-            beatmap.difficulty.approach_rate,
-            beatmap.difficulty.circle_size,
-            beatmap.difficulty.hp_drain_rate,
-            beatmap.difficulty.overall_difficulty,
-            beatmap.difficulty.slider_multiplier,
-            beatmap.difficulty.slider_tick_rate,
-        ]
-    )?;
-
-    Ok(tx.last_insert_rowid())
-}
-
-fn insert_beatmap_metadata(
-    tx: &Transaction,
-    online_db: &Connection,
-    beatmap: &Beatmap,
-) -> Result<i64> {
-    let mapper_id: i64 = online_db
-        .query_row(
-            "SELECT user_id
-             FROM osu_beatmaps
-             WHERE beatmap_id = ?",
-            [beatmap.beatmap_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    let mut background: Option<String> = None;
-    let mut video: Option<String> = None;
-
-    for event in &beatmap.events {
-        match event {
-            Event::Background(bg) => {
-                background = Some(bg.filename.clone());
-                break;
-            }
-            Event::Video(vid) => {
-                video = Some(vid.filename.clone());
-                break;
-            }
-            _ => {
-                continue;
-            }
-        }
-    }
-
-    let params = params![
-        beatmap.artist,
-        beatmap.artist_unicode,
-        beatmap.audio_filename,
-        beatmap.creator,
-        background,
-        beatmap.preview_time.0,
-        beatmap.source,
-        beatmap.tags.join(" "),
-        beatmap.title,
-        beatmap.title_unicode,
-        video,
-        mapper_id
-    ];
-
-    let res = tx.query_row(
-        "SELECT ID
-         FROM BeatmapMetadata
-         WHERE Artist = ?
-           AND ArtistUnicode = ?
-           AND AudioFile = ?
-           AND Author = ?
-           AND BackgroundFile = ?
-           AND PreviewTime = ?
-           AND Source = ?
-           AND Tags = ?
-           AND Title = ?
-           AND TitleUnicode = ?
-           AND VideoFile = ?
-           AND AuthorID = ?
-         LIMIT 1",
-        params,
-        |row| row.get(0),
-    );
-
-    if let Ok(res) = res {
-        Ok(res)
-    } else {
-        tx.execute(
-            "INSERT INTO BeatmapMetadata
-                 (Artist,
-                  ArtistUnicode,
-                  AudioFile,
-                  Author,
-                  BackgroundFile,
-                  PreviewTime,
-                  Source,
-                  Tags,
-                  Title,
-                  TitleUnicode,
-                  VideoFile,
-                  AuthorID)
-             VALUES
-                 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params
-        )?;
-
-        Ok(tx.last_insert_rowid())
-    }
-}
-
-fn insert_beatmapset_info(
-    tx: &Transaction,
-    db_beatmap: &DbBeatmap,
-    metadata_id: i64,
-    force: bool,
-) -> Result<i64> {
-    let res = tx.query_row(
-        "
-        SELECT ID
-        FROM BeatmapSetInfo
-        WHERE OnlineBeatmapSetID = ?
-        LIMIT 1
-    ",
-        [db_beatmap.beatmap_set_id],
-        |row| row.get(0),
-    );
-
-    if res.is_err() || force {
-        let mut random_hash: [u8; 32] = [0; 32];
-        thread_rng().fill(&mut random_hash);
-
-        let mut hash = String::with_capacity(2 * random_hash.len());
-        for byte in random_hash {
-            write!(hash, "{:02x}", byte)?;
-        }
-
-        tx.execute(
-            "INSERT INTO BeatmapSetInfo
-                (DeletePending,
-                 Hash,
-                 MetadataID,
-                 OnlineBeatmapSetID,
-                 Protected,
-                 Status,
-                 DateAdded)
-             VALUES
-                 (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT
-                 (OnlineBeatmapSetID)
-             DO UPDATE SET
-                 DeletePending=excluded.DeletePending,
-                 Hash=excluded.Hash,
-                 MetadataID=excluded.MetadataID,
-                 OnlineBeatmapSetID=excluded.OnlineBeatmapSetID,
-                 Protected=excluded.Protected,
-                 Status=excluded.Status,
-                 DateAdded=excluded.DateAdded",
-            params![
-                false,
-                hash,
-                metadata_id,
-                db_beatmap.beatmap_set_id,
-                false,
-                db_beatmap.ranked_status as i8 - 3,
-                // TODO
-                // the params macro supports datetimes, but i haven't checked if it would be
-                // correct
-                Utc.timestamp_nanos(
-                    ((db_beatmap.modification_date - WIN_TO_UNIX_EPOCH) * 100).try_into()?
-                )
-                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, false)
-                .replace("T", " "),
-            ],
-        )?;
-    }
-
-    if let Ok(res) = res {
-        Ok(res)
-    } else {
-        Ok(tx.last_insert_rowid())
-    }
-}
-
-fn insert_beatmap_info(
-    tx: &Transaction,
-    beatmap: &Beatmap,
-    db_beatmap: &DbBeatmap,
-    beatmapset_info_id: i64,
-    difficulty_id: i64,
-    metadata_id: i64,
-) -> Result<()> {
-    let mut bpm: f64 = 0.0;
-
-    // HACK: should be average bpm i think
-    for tp in &beatmap.timing_points {
-        if let TimingPointKind::Uninherited(UninheritedTimingInfo { mpb, .. }) = tp.kind {
-            bpm = 60_000.0 / mpb as f64;
-            break;
-        }
-    }
-
-    let star_rating: &Vec<(Mods, f64)>;
-
-    match beatmap.mode {
-        Mode::Osu => star_rating = &db_beatmap.std_star_rating,
-        Mode::Taiko => star_rating = &db_beatmap.std_taiko_rating,
-        Mode::Catch => star_rating = &db_beatmap.std_ctb_rating,
-        Mode::Mania => star_rating = &db_beatmap.std_mania_rating,
-    }
-
-    let star_rating = star_rating
-        .iter()
-        .find(|t| t.0 == Mods::None)
-        .map_or(0.0, |o| o.1);
-
-    tx.execute(
-        "INSERT INTO BeatmapInfo
-             (AudioLeadIn,
-              BaseDifficultyID,
-              BeatDivisor,
-              BeatmapSetInfoID,
-              Countdown,
-              DistanceSpacing,
-              GridSize,
-              Hidden,
-              LetterboxInBreaks,
-              MD5Hash,
-              MetadataID,
-              OnlineBeatmapID,
-              Path,
-              RulesetID,
-              SpecialStyle,
-              StackLeniency,
-              StarDifficulty,
-              StoredBookmarks,
-              TimelineZoom,
-              Version,
-              WidescreenStoryboard,
-              Status,
-              BPM,
-              Length,
-              EpilepsyWarning,
-              CountdownOffset,
-              SamplesMatchPlaybackRate)
-         VALUES
-             (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            beatmap.audio_leadin.0,
-            difficulty_id,
-            beatmap.beat_divisor,
-            beatmapset_info_id,
-            beatmap.countdown,
-            beatmap.distance_spacing,
-            beatmap.grid_size,
-            false,
-            beatmap.letterbox_in_breaks,
-            db_beatmap.hash,
-            metadata_id,
-            db_beatmap.beatmap_id,
-            db_beatmap.beatmap_file_name,
-            beatmap.mode as i8,
-            // XXX: ???
-            false,
-            beatmap.stack_leniency,
-            star_rating,
-            beatmap.bookmarks.iter().join(","),
-            beatmap.timeline_zoom,
-            beatmap.difficulty_name,
-            beatmap.widescreen_storyboard,
-            db_beatmap.ranked_status as i8 - 3,
-            bpm,
-            db_beatmap.total_time.0,
-            beatmap.epilepsy_warning,
-            // XXX: ???
-            false,
-            // XXX: ???
-            false
-        ],
-    )?;
-
-    Ok(())
 }
 
 fn check_version(conn: &Connection) -> Result<bool> {
@@ -920,35 +292,6 @@ fn check_version(conn: &Connection) -> Result<bool> {
     )?;
 
     Ok(last_migration == LAST_MIGRATION_ID)
-}
-
-fn hash_file(path: &Path) -> Result<String> {
-    if FAKE_HASH {
-        let mut hash: [u8; 32] = [0; 32];
-        thread_rng().fill(&mut hash);
-
-        let mut ret = String::with_capacity(2 * hash.len());
-        for byte in hash {
-            write!(ret, "{:02x}", byte)?;
-        }
-
-        return Ok(ret);
-    }
-
-    let mut fd = File::open(path)?;
-    let mut buf = vec![];
-    fd.read_to_end(&mut buf)?;
-
-    let mut hash = Sha256::new();
-    hash.update(buf);
-    let hash = hash.finalize();
-
-    let mut ret = String::with_capacity(2 * hash.len());
-    for byte in hash {
-        write!(ret, "{:02x}", byte)?;
-    }
-
-    Ok(ret)
 }
 
 fn wait_for_input() -> Result<()> {
