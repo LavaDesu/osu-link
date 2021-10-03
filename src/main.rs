@@ -301,7 +301,7 @@ fn wait_for_input() -> Result<()> {
 }
 
 #[cfg(target_family = "windows")]
-fn windows_link_check(lazer_path: &Path, stable_path: &Path) -> Result<()> {
+fn windows_link_check(lazer_path: &std::path::Path, stable_path: &std::path::Path) -> Result<()> {
     let mut lazer_path = lazer_path.to_path_buf();
     lazer_path.push("_link_test");
     let mut stable_path = stable_path.to_path_buf();
