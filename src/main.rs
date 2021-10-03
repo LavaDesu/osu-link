@@ -219,7 +219,7 @@ impl BeatmapThread {
         }
     }
 
-    fn start(&self, beatmaps: Vec<DbBeatmap>, sender: Sender<BeatmapProcessedContext>) {
+    fn start(self, beatmaps: Vec<DbBeatmap>, sender: Sender<BeatmapProcessedContext>) {
         let mut processed_sets: Vec<u32> = vec![];
         let beatmaps = beatmaps
             .into_iter()
@@ -299,7 +299,7 @@ impl HashThread {
         }
     }
 
-    fn start(&self, sender: Sender<HashProcessedContext>, receiver: Receiver<HashRequestContext>) {
+    fn start(self, sender: Sender<HashProcessedContext>, receiver: Receiver<HashRequestContext>) {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_cpus::get())
             .thread_name(|i| format!("(osu-link) hash thread {}", i))
