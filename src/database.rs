@@ -50,8 +50,7 @@ pub fn insert_beatmaps(
                 continue;
             }
 
-            let mut bms_path = state.stable_path.clone();
-            bms_path.push("Songs");
+            let mut bms_path = state.stable_songs_path.clone();
             bms_path.push(&beatmap.db_beatmap.folder_name);
 
             for entry in WalkDir::new(&bms_path) {

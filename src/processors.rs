@@ -50,7 +50,7 @@ pub struct BeatmapProcessor {
     bar: ProgressBar,
     insert_bar: ProgressBar,
     length_unchanging_style: ProgressStyle,
-    stable_path: PathBuf,
+    stable_songs_path: PathBuf,
 }
 
 impl BeatmapProcessor {
@@ -59,7 +59,7 @@ impl BeatmapProcessor {
             bar: state.progress_bars.beatmap.clone(),
             insert_bar: state.progress_bars.beatmap_insert.clone(),
             length_unchanging_style: state.progress_styles.length_unchanging.clone(),
-            stable_path: state.stable_path.clone(),
+            stable_songs_path: state.stable_songs_path.clone(),
         }
     }
 
@@ -113,8 +113,7 @@ impl BeatmapProcessor {
         db_beatmap: &DbBeatmap,
         is_main: bool,
     ) -> Result<()> {
-        let mut path = self.stable_path.clone();
-        path.push("Songs");
+        let mut path = self.stable_songs_path.clone();
         path.push(&db_beatmap.folder_name);
         path.push(&db_beatmap.beatmap_file_name);
 

@@ -8,8 +8,8 @@ use std::{
     collections::HashSet,
     convert::TryInto,
     fs::File,
-    io::{stdin, stdout, BufReader, Write as IoWrite},
-    path::PathBuf,
+    io::{stdin, stdout, BufRead, BufReader, Write},
+    path::{Path, PathBuf},
     sync::mpsc::channel,
     thread::spawn,
 };
@@ -52,6 +52,7 @@ pub struct State {
     pub stable_path: PathBuf,
     pub lazer_db_path: PathBuf,
     pub stable_db_path: PathBuf,
+    pub stable_songs_path: PathBuf,
 
     db_online_connection: Connection,
     progress_bars: ProgressBars,
@@ -101,6 +102,8 @@ impl State {
                 "Not a valid osu!stable directory? (missing osu!.db)"
             ));
         };
+
+        let stable_songs_path = get_songs_directory(&stable_path)?;
 
         #[cfg(target_family = "windows")]
         if let Err(_) = windows_link_check(&lazer_path, &stable_path) {
@@ -155,6 +158,7 @@ impl State {
             lazer_db_path,
             stable_path,
             stable_db_path,
+            stable_songs_path,
 
             db_online_connection,
             progress_bars: ProgressBars {
@@ -178,6 +182,8 @@ impl State {
 fn main() -> Result<()> {
     let state = State::new()?;
 
+    println!("Preparing...");
+
     let mut db_connection = Connection::open(&state.lazer_db_path)?;
 
     if !check_version(&db_connection)? {
@@ -187,10 +193,11 @@ fn main() -> Result<()> {
     let (stable_len, lazer_len, beatmaps) = get_beatmaps(&state, &db_connection)?;
 
     println!("Stable path: {:?}", state.stable_path);
+    println!("Stable songs path: {:?}", state.stable_songs_path);
     println!("Lazer path: {:?}", state.lazer_path);
     println!("Stable beatmap count: {}", stable_len);
     println!("Lazer beatmap count: {}", lazer_len);
-    print!("Make sure both osu!stable and osu!lazer are closed! Press enter to continue");
+    print!("Make sure both osu!stable and osu!lazer are closed! Press enter to continue, Ctrl+C to cancel");
     stdout().flush()?;
     wait_for_input()?;
 
@@ -280,6 +287,31 @@ fn get_beatmaps(
         .set_length(beatmaps.len().try_into()?);
 
     Ok((stable_len, lazer_len, beatmaps))
+}
+
+fn get_songs_directory(stable_path: &Path) -> Result<PathBuf> {
+    let username = whoami::username();
+    let mut path = stable_path.to_path_buf();
+    path.push(format!("osu!.{}.cfg", username));
+
+    let fd = File::open(path)?;
+    let reader = BufReader::new(fd);
+
+    for line in reader.lines() {
+        let line = line?;
+
+        if line.starts_with("BeatmapDirectory") {
+            let parts = line.split('=').collect_vec();
+
+            let mut path = stable_path.to_path_buf();
+            path.push(parts.get(1).unwrap().trim());
+            return Ok(path);
+        }
+    }
+
+    let mut path = stable_path.to_path_buf();
+    path.push("Songs");
+    Ok(path)
 }
 
 fn check_version(conn: &Connection) -> Result<bool> {
