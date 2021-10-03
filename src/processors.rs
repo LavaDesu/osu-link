@@ -44,7 +44,7 @@ pub mod context {
     }
 }
 
-use context::{BeatmapProcessed, HashRequest, HashProcessed};
+use context::{BeatmapProcessed, HashProcessed, HashRequest};
 
 pub struct BeatmapProcessor {
     bar: ProgressBar,
