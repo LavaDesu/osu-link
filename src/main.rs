@@ -87,11 +87,11 @@ struct State {
 
 impl State {
     fn new() -> Result<Self> {
-        print!("You will be prompted to select the path to your osu lazer directory, press enter to continue");
+        print!("You will be prompted to select the path to your osu!lazer directory, press enter to continue");
         stdout().flush()?;
         wait_for_input()?;
         let lazer_path = FileDialog::new()
-            .set_title("Select the path to your osu lazer directory")
+            .set_title("Select the path to your osu!lazer directory")
             .set_directory(dirs::data_local_dir().unwrap_or_else(|| "/".into()))
             .pick_folder()
             .context("Failed to select the directory..?")?;
@@ -100,7 +100,7 @@ impl State {
         lazer_db_path.push("client.db");
         if !lazer_db_path.exists() {
             return Err(anyhow!(
-                "Not a valid osu lazer directory? (missing client.db)"
+                "Not a valid osu!lazer directory? (missing client.db)"
             ));
         };
 
@@ -108,15 +108,15 @@ impl State {
         lazer_online_db_path.push("online.db");
         if !lazer_online_db_path.exists() {
             return Err(anyhow!(
-                "Missing osu lazer online.db, try opening the game and then rerunning this tool?"
+                "Missing osu!lazer online.db, try opening the game, closing it, and then rerunning this tool?"
             ));
         };
 
-        print!("You will be prompted to select the path to your osu stable directory, press enter to continue");
+        print!("You will be prompted to select the path to your osu!stable directory, press enter to continue");
         stdout().flush()?;
         wait_for_input()?;
         let stable_path = FileDialog::new()
-            .set_title("Select the path to your osu lazer directory")
+            .set_title("Select the path to your osu!stable directory")
             .set_directory(dirs::data_local_dir().unwrap_or_else(|| "/".into()))
             .pick_folder()
             .context("Failed to select the directory..?")?;
@@ -125,13 +125,13 @@ impl State {
         stable_db_path.push("osu!.db");
         if !stable_db_path.exists() {
             return Err(anyhow!(
-                "Not a valid osu stable directory? (missing osu!.db)"
+                "Not a valid osu!stable directory? (missing osu!.db)"
             ));
         };
 
         #[cfg(target_family = "windows")]
         if let Err(_) = windows_link_check(&lazer_path, &stable_path) {
-            return Err(anyhow!("Hard link test failed! On windows, both lazer and stable must be on the same disk for linking to work."));
+            return Err(anyhow!("Hard link test failed! On Windows, both lazer and stable must be on the same disk for linking to work."));
         }
 
         let db_online_connection =
@@ -256,11 +256,11 @@ impl BeatmapThread {
                     }
                     self.insert_bar.inc_length(1);
                 });
-        });
 
-        self.bar.finish_with_message("Done.");
-        self.insert_bar
-            .set_style(self.length_unchanging_style.clone());
+            self.bar.finish_with_message("Done.");
+            self.insert_bar
+                .set_style(self.length_unchanging_style.clone());
+        });
     }
 
     fn process(
@@ -340,7 +340,7 @@ fn main() -> Result<()> {
     let mut db_connection = Connection::open(&state.lazer_db_path)?;
 
     if !check_version(&db_connection)? {
-        return Err(anyhow!("Database version mismatch! Please make sure you have the latest versions of both osu and osu-link"));
+        return Err(anyhow!("Database version mismatch! Please make sure you have the latest versions of both osu! and osu-link"));
     }
 
     let (stable_len, lazer_len, beatmaps) = get_beatmaps(&state, &db_connection)?;
@@ -349,7 +349,7 @@ fn main() -> Result<()> {
     println!("Lazer path: {:?}", state.lazer_path);
     println!("Stable beatmap count: {}", stable_len);
     println!("Lazer beatmap count: {}", lazer_len);
-    print!("If this looks correct, press enter to continue and start");
+    print!("Make sure both osu!stable and osu!lazer are closed! Press enter to continue");
     stdout().flush()?;
     wait_for_input()?;
 
