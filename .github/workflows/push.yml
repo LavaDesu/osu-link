@@ -17,7 +17,7 @@ jobs:
               name: x86_64-macos
               target: target/release/osu-link
             - platform: windows-latest
-              name: x86_64-win
+              name: x86_64-win.exe
               target: target/release/osu-link.exe
 
     runs-on: ${{ matrix.platform }}
