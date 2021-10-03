@@ -1,4 +1,7 @@
-on: [push, workflow_dispatch]
+on:
+  push:
+    tags-ignore: ['**']
+  workflow_dispatch:
 
 name: Build Artifacts
 
