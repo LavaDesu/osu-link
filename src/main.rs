@@ -621,7 +621,12 @@ fn insert_beatmap(
 fn insert_beatmap_difficulty(tx: &Transaction, beatmap: &Beatmap) -> Result<i64> {
     tx.execute(
         "INSERT INTO BeatmapDifficulty
-             (ApproachRate, CircleSize, DrainRate, OverallDifficulty, SliderMultiplier, SliderTickRate)
+             (ApproachRate,
+              CircleSize,
+              DrainRate,
+              OverallDifficulty,
+              SliderMultiplier,
+              SliderTickRate)
          VALUES
              (?, ?, ?, ?, ?, ?)",
         params![
@@ -711,7 +716,18 @@ fn insert_beatmap_metadata(
     } else {
         tx.execute(
             "INSERT INTO BeatmapMetadata
-                 (Artist, ArtistUnicode, AudioFile, Author, BackgroundFile, PreviewTime, Source, Tags, Title, TitleUnicode, VideoFile, AuthorID)
+                 (Artist,
+                  ArtistUnicode,
+                  AudioFile,
+                  Author,
+                  BackgroundFile,
+                  PreviewTime,
+                  Source,
+                  Tags,
+                  Title,
+                  TitleUnicode,
+                  VideoFile,
+                  AuthorID)
              VALUES
                  (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params
@@ -749,7 +765,13 @@ fn insert_beatmapset_info(
 
         tx.execute(
             "INSERT INTO BeatmapSetInfo
-                (DeletePending, Hash, MetadataID, OnlineBeatmapSetID, Protected, Status, DateAdded)
+                (DeletePending,
+                 Hash,
+                 MetadataID,
+                 OnlineBeatmapSetID,
+                 Protected,
+                 Status,
+                 DateAdded)
              VALUES
                  (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT
