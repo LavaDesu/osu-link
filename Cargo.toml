@@ -27,3 +27,4 @@ whoami = "1.1.5"
 
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.25.3", features = ["bundled"] }
+winreg = "0.10"

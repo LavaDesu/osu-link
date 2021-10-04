@@ -61,14 +61,7 @@ pub struct State {
 
 impl State {
     fn new() -> Result<Self> {
-        print!("You will be prompted to select the path to your osu!lazer directory, press enter to continue");
-        stdout().flush()?;
-        wait_for_input()?;
-        let lazer_path = FileDialog::new()
-            .set_title("Select the path to your osu!lazer directory")
-            .set_directory(dirs::data_local_dir().unwrap_or_else(|| "/".into()))
-            .pick_folder()
-            .context("Failed to select the directory..?")?;
+        let lazer_path = get_lazer_path()?;
 
         let mut lazer_db_path = lazer_path.clone();
         lazer_db_path.push("client.db");
@@ -86,23 +79,8 @@ impl State {
             ));
         };
 
-        print!("You will be prompted to select the path to your osu!stable directory, press enter to continue");
-        stdout().flush()?;
-        wait_for_input()?;
-        let stable_path = FileDialog::new()
-            .set_title("Select the path to your osu!stable directory")
-            .set_directory(dirs::data_local_dir().unwrap_or_else(|| "/".into()))
-            .pick_folder()
-            .context("Failed to select the directory..?")?;
-
-        let mut stable_db_path = stable_path.clone();
-        stable_db_path.push("osu!.db");
-        if !stable_db_path.exists() {
-            return Err(anyhow!(
-                "Not a valid osu!stable directory? (missing osu!.db)"
-            ));
-        };
-
+        let stable_path = get_stable_path()?;
+        let stable_db_path = stable_path.join("osu!.db");
         let stable_songs_path = get_songs_directory(&stable_path)?;
 
         #[cfg(target_family = "windows")]
@@ -328,9 +306,107 @@ fn check_version(conn: &Connection) -> Result<bool> {
     Ok(last_migration == LAST_MIGRATION_ID)
 }
 
+fn check_stable_path(path: &Path) -> bool {
+    path.join("osu!.db").exists()
+}
+
+fn prompt_stable_path() -> Result<PathBuf> {
+    print!("You will be prompted to select the path to your osu!stable directory, press enter to continue");
+    stdout().flush()?;
+    wait_for_input()?;
+
+    let path = FileDialog::new()
+        .set_title("Select the path to your osu!stable directory")
+        .set_directory(dirs::data_dir().unwrap_or_else(|| "/".into()))
+        .pick_folder()
+        .context("Failed to select the directory..?")?;
+
+    if check_stable_path(&path) {
+        Ok(path)
+    } else {
+        Err(anyhow!(
+            "Not a valid osu!stable directory? (missing osu!.db)"
+        ))
+    }
+}
+
+fn get_stable_path() -> Result<PathBuf> {
+    // https://osu.ppy.sh/wiki/en/osu%21_Program_Files#installation-paths
+    #[cfg(target_os = "macos")]
+    let path = Some(PathBuf::from(
+        "/Applications/osu!.app/Contents/Resources/drive_c/osu!",
+    ));
+
+    #[cfg(target_os = "linux")]
+    let path = dirs::data_local_dir().map(|p| p.join("osu!"));
+
+    #[cfg(target_os = "windows")]
+    let path = get_stable_path_from_registry()?.ok();
+
+    if let Some(path) = path {
+        if check_stable_path(&path) {
+            return Ok(path);
+        }
+    }
+
+    prompt_stable_path()
+}
+
+fn get_lazer_path() -> Result<PathBuf> {
+    let path = dirs::data_dir().context("No data directory?")?.join("osu");
+
+    let custom_storage = path.join("storage.ini");
+    if custom_storage.exists() {
+        let fd = File::open(custom_storage)?;
+
+        for line in BufReader::new(fd).lines() {
+            let line = line?;
+
+            if line.starts_with("FullPath") {
+                let parts = line.split('=').collect_vec();
+
+                return Ok(PathBuf::from(parts.get(1).unwrap().trim()));
+            }
+        }
+    }
+
+    if path.join("client.db").exists() {
+        Ok(path)
+    } else {
+        Err(anyhow!(
+            "Can't find lazer path, do you have the game installed?"
+        ))
+    }
+}
+
+#[cfg(target_family = "windows")]
+fn get_stable_path_from_registry() -> Result<PathBuf> {
+    use winreg::{enums::HKEY_CLASSES_ROOT, RegKey};
+
+    let root = RegKey::predef(HKEY_CLASSES_ROOT);
+    let value: String = root
+        .open_subkey("osu\\shell\\open\\command")?
+        .get_value("")?;
+    let path = value
+        .split('"')
+        .collect_vec()
+        .get(1)
+        .context("invalid regkey")?
+        .trim()
+        .replace("osu!.exe", "");
+
+    let path = PathBuf::from(path);
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(anyhow!("registry path does not exist"))
+    }
+}
+
 fn wait_for_input() -> Result<()> {
     let mut str = String::new();
     stdin().read_line(&mut str)?;
+
     Ok(())
 }
 
