@@ -355,7 +355,7 @@ fn get_stable_path() -> Result<PathBuf> {
     let path = dirs::data_local_dir().map(|p| p.join("osu!"));
 
     #[cfg(target_os = "windows")]
-    let path = get_stable_path_from_registry()?.ok();
+    let path = get_stable_path_from_registry().ok();
 
     if let Some(path) = path {
         if check_stable_path(&path) {
