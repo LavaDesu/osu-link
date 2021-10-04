@@ -157,7 +157,21 @@ impl State {
     }
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("Error: {:?}", e);
+
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!();
+            eprint!("Press enter to exit");
+            stdout().flush().unwrap();
+            wait_for_input().unwrap();
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let state = State::new()?;
 
     println!("Preparing...");
